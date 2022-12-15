@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+set -e
+
+extension_name="solidus_stripe"
+app_name="sandbox"
+
+bin/rails-new "$app_name"
+
+# Stay away from the bundler env of the containing extension.
+function unbundled {
+  echo "~~> Running: $@"
+  ruby -rbundler -e'Bundler.with_unbundled_env {system *ARGV}' -- env BUNDLE_SUPPRESS_INSTALL_USING_MESSAGES=true "$@"
+}
+
+cd "./$app_name"
+unbundled bundle add $extension_name --path ..
+unbundled bundle exec rails generate $extension_name:install --migrate --specs=all
+
+if [[ -n "$SOLIDUS_STRIPE_API_KEY" ]]; then
+  echo "~~> Creating the stripe payment method using env credentials..."
+  unbundled bundle exec rails runner \
+    'p SolidusStripe::PaymentMethod.create!(name: "SolidusStripe", preference_source: "solidus_stripe_env_credentials", position: -1)'
+fi

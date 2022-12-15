@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+set -e
+
+extension_name="solidus_stripe"
+app_name="dummy-app"
+
+bin/rails-new "$app_name"
+
+# Stay away from the bundler env of the containing extension.
+function unbundled {
+  echo "~~> Running: $@"
+  ruby -rbundler -e'Bundler.with_unbundled_env {system *ARGV}' -- env BUNDLE_SUPPRESS_INSTALL_USING_MESSAGES=true "$@"
+}
+
+cd ./dummy-app
+
+# Coverage
+echo "require_relative '../../coverage.rb' if ENV['COVERAGE']" >> config/boot.rb
+echo "gem 'rspec_junit_formatter', require: false" >> Gemfile
+echo "gem 'simplecov', '~> 0.22', require: false" >> Gemfile
+echo "gem 'simplecov-cobertura', require: false" >> Gemfile
+echo "gem 'stripe-ruby-mock', group: :test" >> Gemfile
+unbundled bundle install
+
+unbundled bundle add $extension_name --path ..
+unbundled bundle exec rails generate $extension_name:install --migrate --load-seeds=false --specs=all

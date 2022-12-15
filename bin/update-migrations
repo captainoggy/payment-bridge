@@ -1,0 +1,56 @@
+#!/usr/bin/env ruby
+
+app = ARGV.shift || abort("Please provide the APP_NAME as the first argument")
+extension_name = "solidus_stripe"
+
+source_migrations = {}
+Dir['db/migrate/*.rb'].sort.each do |path|
+  basename = File.basename(path, ".rb").sub(/^\d+_/, '')
+  source_migrations[basename] = path
+end
+
+app_migrations = {}
+Dir["#{app}/db/migrate/*.#{extension_name}.rb"].sort.each do |path|
+  _timestamp, basename = File.basename(path, ".#{extension_name}.rb").split('_', 2)
+  app_migrations[basename] = path
+end
+
+migrate_app = -> do
+  puts "migrating #{app}..."
+  Dir.chdir(app) { system("bin/rails db:migrate RAILS_ENV=test") }
+end
+
+base_time = Time.now.utc.to_i
+install_migration = ->(basename) do
+  path = source_migrations[basename]
+  base_time += 1
+  puts "installing #{basename}..."
+  timestamp = Time.at(base_time).strftime("%F%T").delete('-:') # rubocop:disable Rails/TimeZone
+  contents = File.read(path)
+
+  File.write("#{app}/db/migrate/#{timestamp}_#{basename}.#{extension_name}.rb", contents)
+end
+
+reinstall_migrations = -> do
+  app_migrations.each_value { |path| File.delete(path) }
+  Dir["#{app}/db/*{.sqlite3,schema.rb}"].each { File.delete(_1) }
+  source_migrations.each_key(&install_migration)
+  migrate_app.call
+end
+
+exit reinstall_migrations.call if ARGV.shift == "--force"
+
+app_migrations.each_key do |basename|
+  source_content = File.read(source_migrations[basename]) if source_migrations[basename]
+  app_content = File.read(app_migrations[basename])
+
+  next if source_content == app_content
+
+  reinstall_migrations.call
+  exit
+end
+
+if (missing_migrations = source_migrations.keys - app_migrations.keys).any?
+  missing_migrations.each(&install_migration)
+  migrate_app.call
+end

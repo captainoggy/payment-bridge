@@ -1,0 +1,122 @@
+version: 2.1
+
+orbs:
+  browser-tools: circleci/browser-tools@1.1
+  codecov: codecov/codecov@3.2.4
+
+  # Always take the latest version of the orb, this allows us to
+  # run specs against Solidus supported versions only without the need
+  # to change this configuration every time a Solidus version is released
+  # or goes EOL.
+  solidusio_extensions: solidusio/extensions@volatile
+
+jobs:
+  run-specs:
+    parameters:
+      database:
+        type: string
+        default: postgres
+      ruby:
+        type: string
+        default: "3.2"
+      coverage:
+        type: boolean
+        default: false
+    executor:
+      name: solidusio_extensions/<< parameters.database >>
+      ruby_version: << parameters.ruby >>
+    steps:
+      - checkout
+      - browser-tools/install-chrome
+      - run:
+          name: Install libvips
+          command: |
+            sudo apt-get update
+            sudo apt-get install -yq libvips-dev
+      - run:
+          name: "Update Rubygems"
+          command: |
+            sudo gem update --system --no-document
+            gem install bundler --no-document
+            gem environment path
+      - run:
+          name: "Store tool versions"
+          command: |
+            rm -rf /tmp/.tool-versions
+            ruby -v >> /tmp/.tool-versions
+            gem search -eq rails >> /tmp/.tool-versions # get the latest rails from rubygems
+            gem search -eq solidus >> /tmp/.tool-versions # get the latest solidus from rubygems
+            cat /tmp/.tool-versions
+      - restore_cache:
+          keys:
+            - solidus-stripe-gems-v1-<<parameters.ruby>>-{{ checksum "/tmp/.tool-versions" }}
+            - solidus-stripe-gems-v1-<<parameters.ruby>>-
+      - run:
+          name: "Install gems"
+          command: |
+            bundle install
+      - run:
+          name: "Install dummy app"
+          command: |
+            <<#parameters.coverage>>export COVERAGE=true<</parameters.coverage>>
+            bin/dummy-app
+          environment:
+            FRONTEND: starter
+            SOLIDUS_BRANCH: main
+      - save_cache:
+          key: solidus-stripe-gems-v1-<<parameters.ruby>>-{{ checksum "/tmp/.tool-versions" }}
+          paths:
+            - /home/circleci/.rubygems
+      - run:
+          name: "Runs specs"
+          command: |
+            <<#parameters.coverage>>export COVERAGE=true<</parameters.coverage>>
+            bin/rspec --format progress --format RspecJunitFormatter --out "$PWD/test-results/results.xml"
+      - when:
+          condition: <<parameters.coverage>>
+          steps: ["codecov/upload"]
+          path: test-results
+      - store_artifacts:
+          path: /home/circleci/project/dummy-app/tmp/capybara/
+          destination: capybara
+      - store_artifacts:
+          path: /home/circleci/project/coverage/
+          destination: coverage
+  lint-code:
+    parameters:
+      ruby:
+        type: string
+        default: "3.2"
+    executor:
+      name: solidusio_extensions/sqlite-memory
+      ruby_version: << parameters.ruby >>
+    steps:
+      - solidusio_extensions/lint-code
+      - run:
+          name: Generate documentation
+          command: |
+            bundle exec yardoc
+      - store_artifacts:
+          path: /home/circleci/project/doc
+          destination: doc
+
+workflows:
+  build:
+    jobs:
+      - run-specs:
+          name: &name "run-specs-ruby-<<matrix.ruby>>-db-<<matrix.database>>"
+          context: stripe-test-credentials
+          matrix:
+            parameters: { ruby: ["3.2"], database: ["sqlite"], coverage: [true] }
+      - run-specs:
+          name: *name
+          context: stripe-test-credentials
+          matrix:
+            parameters: { ruby: ["3.1"], database: ["mysql"], coverage: [false] }
+      - run-specs:
+          name: *name
+          context: stripe-test-credentials
+          matrix:
+            parameters: { ruby: ["3.0"], database: ["postgres"], coverage: [false] }
+      - lint-code:
+          ruby: "3.0"
